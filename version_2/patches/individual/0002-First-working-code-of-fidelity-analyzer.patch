@@ -1,0 +1,205 @@
+From af6cd229d6e3d7e644647fdb6978fd556ebb320c Mon Sep 17 00:00:00 2001
+From: Georg Lippitsch <georg.lippitsch@gmx.at>
+Date: Wed, 18 Sep 2013 23:20:43 +0200
+Subject: [PATCH 2/2] First working code of fidelity analyzer
+
+---
+ libavformat/dvafidelityenc.c | 158 ++++++++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 157 insertions(+), 1 deletion(-)
+
+diff --git a/libavformat/dvafidelityenc.c b/libavformat/dvafidelityenc.c
+index bb8a2ed..4dc2be2 100644
+--- a/libavformat/dvafidelityenc.c
++++ b/libavformat/dvafidelityenc.c
+@@ -19,22 +19,155 @@
+ 
+ #include "libavutil/avassert.h"
+ #include "libavutil/avstring.h"
++#include "libavutil/colorspace.h"
+ #include "libavutil/opt.h"
++#include "libavutil/pixdesc.h"
+ #include "avformat.h"
+ #include "internal.h"
+ 
+ struct DVAContext {
+     const AVClass *avclass;
+ 
++    int64_t frame;
++    int expected;
++
++    // AVOptions
++    int rect_pos[2][2];
++    int rect_size[2][2];
++    uint8_t color[4][2][2][4];
++    int fuzz_luma;
++    int fuzz_chroma;
+ };
++                    
+ 
+ static int dvafidelity_write_header(struct AVFormatContext *s)
+ {
++    struct DVAContext *c = s->priv_data;
++    c->expected = -1;
+     return 0;
+ }
+ 
+ static int dvafidelity_write_packet(struct AVFormatContext *s, AVPacket *pkt)
+ {
++    struct DVAContext *c = s->priv_data;
++    struct AVCodecContext* codec = s->streams[0]->codec;
++    const AVPixFmtDescriptor *desc = av_pix_fmt_desc_get(codec->pix_fmt);
++
++    int w = codec->width;
++    int h = codec->height;
++    int cw = -((-w) >> desc->log2_chroma_w);
++    int ch = -((-h) >> desc->log2_chroma_h);
++
++    uint8_t *py = pkt->buf->data;
++    uint8_t *pu = pkt->buf->data+w*h;
++    uint8_t *pv = pkt->buf->data+w*h+cw*ch;
++
++    int ry, ru, rv;
++
++    int e, frame, i, j, x, y;
++
++    int differ = 0;
++
++    char logbuf[256];
++
++    if (codec->codec_id != AV_CODEC_ID_RAWVIDEO) {
++        av_log(s, AV_LOG_ERROR, "Only rawvideo is supported\n");
++        return AVERROR_INVALIDDATA;
++    }
++    if (codec->pix_fmt != AV_PIX_FMT_YUV420P &&
++        codec->pix_fmt != AV_PIX_FMT_YUV422P &&
++        codec->pix_fmt != AV_PIX_FMT_YUV444P) {
++        av_log(s, AV_LOG_ERROR, "Pixel format not supported\n");
++        return AVERROR_INVALIDDATA;
++    }
++    for (i = 0; i < 2; i++) {
++        if (c->rect_pos[i][0]+c->rect_pos[i][1]*w+
++            c->rect_size[i][0]*c->rect_size[i][1] > w*h) {
++            av_log(s, AV_LOG_ERROR, "Crop rectangle %d outside frame\n", i);
++            return AVERROR_INVALIDDATA;
++        }
++    }
++    if (pkt->buf->size < w*h+2*cw*ch)
++    {
++        av_log(s, AV_LOG_ERROR, "Packet buffer too small\n");
++        return AVERROR_INVALIDDATA;
++    }
++
++    e = c->expected == -1 ? 0 : c->expected;
++
++    // Loop for frame
++    for (frame = 0; frame < 4; frame++) {
++        differ = 0;
++
++        // Loop for upper/lower rectangle
++        for (i = 0; i < 2; i++) {
++            int r_x, r_y, r_w, r_h;
++            int c_r_x, c_r_y, c_r_w, c_r_h;
++            r_x = c->rect_pos[i][0];
++            r_y = c->rect_pos[i][1];
++            r_w = c->rect_size[i][0];
++            r_h = c->rect_size[i][1];
++            c_r_x = -((-r_x) >> desc->log2_chroma_w);
++            c_r_y = -((-r_y) >> desc->log2_chroma_h);
++            c_r_w = -((-r_w) >> desc->log2_chroma_w);
++            c_r_h = -((-r_h) >> desc->log2_chroma_h);
++
++            // Loop for fields
++            for (j = 0; j < 2; j++) {
++
++                ry = RGB_TO_Y_CCIR(c->color[e][i][j][0],
++                                   c->color[e][i][j][1],
++                                   c->color[e][i][j][2]);
++                ru = RGB_TO_U_CCIR(c->color[e][i][j][0],
++                                   c->color[e][i][j][1],
++                                   c->color[e][i][j][2], 0);
++                rv = RGB_TO_V_CCIR(c->color[e][i][j][0],
++                                   c->color[e][i][j][1],
++                                   c->color[e][i][j][2], 0);
++                // Compare luma
++                for (y = j; y < r_h; y+=2) {
++                    for (x = 0; x < r_w; x++) {
++                        differ += ((py[r_y*w+r_x+y*w+x] - ry) *
++                                   (py[r_y*w+r_x+y*w+x] - ry) >
++                                   c->fuzz_luma * c->fuzz_luma);
++                    }
++                }
++                avio_write(s->pb, logbuf, strlen(logbuf));
++                // Compare u
++                for (y = j; y < c_r_h; y+=2) {
++                    for (x = 0; x < c_r_w; x++) {
++                        differ += ((pu[c_r_y*cw+c_r_x+y*cw+x] - ru) *
++                                   (pu[c_r_y*cw+c_r_x+y*cw+x] - ru) >
++                                   c->fuzz_chroma * c->fuzz_chroma);
++                    }
++                }
++                // Compare v
++                for (y = j; y < c_r_h; y+=2) {
++                    for (x = 0; x < c_r_w; x++) {
++                        differ += ((pv[c_r_y*cw+c_r_x+y*cw+x] - rv) *
++                                   (pv[c_r_y*cw+c_r_x+y*cw+x] - rv) >
++                                   c->fuzz_chroma * c->fuzz_chroma);
++                    }
++                }
++            }
++        }
++
++        if (!differ)
++            break;
++
++        if (++e >= 4) e = 0;
++    }
++
++    if (differ)
++        e = -1;
++
++    snprintf(logbuf, sizeof(logbuf), "Compared frame %"PRId64", expected=%d, found=%d, %s\n",
++             c->frame++, c->expected, e,
++             (c->expected == e || c->expected == -1) && e >= 0 ? "Ok" : "Failed");
++    avio_write(s->pb, logbuf, strlen(logbuf));
++
++    c->expected = differ ? -1 : (e + 1) % 4;
++
+     return 0;
+ }
+ 
+@@ -43,8 +176,31 @@ static int dvafidelity_write_trailer(struct AVFormatContext *s)
+     return 0;
+ }
+ 
++#define OFFSET(x) offsetof(struct DVAContext, x)
++#define ENC AV_OPT_FLAG_ENCODING_PARAM
+ static const AVOption dva_options[] = {
+-
++    { "crop_upper_pos", "Position of upper crop rectangle", OFFSET(rect_pos[0]), AV_OPT_TYPE_IMAGE_SIZE, {.str = "600x6"}, 0, 0, ENC },
++    { "crop_upper_size", "Size of upper crop rectangle", OFFSET(rect_size[0]), AV_OPT_TYPE_IMAGE_SIZE, {.str = "96x192"}, 0, 0, ENC },
++    { "crop_lower_pos", "Position of lower crop rectangle", OFFSET(rect_pos[1]), AV_OPT_TYPE_IMAGE_SIZE, {.str = "600x200"}, 0, 0, ENC },
++    { "crop_lower_size", "Size of lower crop rectangle", OFFSET(rect_size[1]), AV_OPT_TYPE_IMAGE_SIZE, {.str = "96x192"}, 0, 0, ENC },
++    { "color_f1_up_top", "Color of frame 1, upper rectangle, top field", OFFSET(color[0][0][0]), AV_OPT_TYPE_COLOR, {.str = "0xFF0000"}, 0, 0, ENC },
++    { "color_f1_up_bot", "Color of frame 1, upper rectangle, bottom field", OFFSET(color[0][0][1]), AV_OPT_TYPE_COLOR, {.str = "0xFF0000"}, 0, 0, ENC },
++    { "color_f1_low_top", "Color of frame 1, lower rectangle, top field", OFFSET(color[0][1][0]), AV_OPT_TYPE_COLOR, {.str = "0x00FF00"}, 0, 0, ENC },
++    { "color_f1_low_bot", "Color of frame 1, lower rectangle, bottom field", OFFSET(color[0][1][1]), AV_OPT_TYPE_COLOR, {.str = "0x0000FF"}, 0, 0, ENC },
++    { "color_f2_up_top", "Color of frame 2, upper rectangle, top field", OFFSET(color[1][0][0]), AV_OPT_TYPE_COLOR, {.str = "0x00FF00"}, 0, 0, ENC },
++    { "color_f2_up_bot", "Color of frame 2, upper rectangle, bottom field", OFFSET(color[1][0][1]), AV_OPT_TYPE_COLOR, {.str = "0x00FF00"}, 0, 0, ENC },
++    { "color_f2_low_top", "Color of frame 2, lower rectangle, top field", OFFSET(color[1][1][0]), AV_OPT_TYPE_COLOR, {.str = "0xFF0000"}, 0, 0, ENC },
++    { "color_f2_low_bot", "Color of frame 2, lower rectangle, bottom field", OFFSET(color[1][1][1]), AV_OPT_TYPE_COLOR, {.str = "0x0000FF"}, 0, 0, ENC },
++    { "color_f3_up_top", "Color of frame 3, upper rectangle, top field", OFFSET(color[2][0][0]), AV_OPT_TYPE_COLOR, {.str = "0xFF0000"}, 0, 0, ENC },
++    { "color_f3_up_bot", "Color of frame 3, upper rectangle, bottom field", OFFSET(color[2][0][1]), AV_OPT_TYPE_COLOR, {.str = "0xFF0000"}, 0, 0, ENC },
++    { "color_f3_low_top", "Color of frame 3, lower rectangle, top field", OFFSET(color[2][1][0]), AV_OPT_TYPE_COLOR, {.str = "0x00FF00"}, 0, 0, ENC },
++    { "color_f3_low_bot", "Color of frame 3, lower rectangle, bottom field", OFFSET(color[2][1][1]), AV_OPT_TYPE_COLOR, {.str = "0xFFFFFF"}, 0, 0, ENC },
++    { "color_f4_up_top", "Color of frame 4, upper rectangle, top field", OFFSET(color[3][0][0]), AV_OPT_TYPE_COLOR, {.str = "0x00FF00"}, 0, 0, ENC },
++    { "color_f4_up_bot", "Color of frame 4, upper rectangle, bottom field", OFFSET(color[3][0][1]), AV_OPT_TYPE_COLOR, {.str = "0x00FF00"}, 0, 0, ENC },
++    { "color_f4_low_top", "Color of frame 4, lower rectangle, top field", OFFSET(color[3][1][0]), AV_OPT_TYPE_COLOR, {.str = "0xFF0000"}, 0, 0, ENC },
++    { "color_f4_low_bot", "Color of frame 4, lower rectangle, bottom field", OFFSET(color[3][1][1]), AV_OPT_TYPE_COLOR, {.str = "0xFFFFFF"}, 0, 0, ENC },
++    { "fuzz_luma", "Fuzz for luminance", OFFSET(fuzz_luma), AV_OPT_TYPE_INT, {.i64 = 20}, 20, 100, ENC },
++    { "fuzz_chroma", "Fuzz for chrominance", OFFSET(fuzz_chroma), AV_OPT_TYPE_INT, {.i64 = 20}, 0, 100, ENC },
+     { NULL },
+ };
+ 
+-- 
+1.8.1.4
+

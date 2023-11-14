@@ -1,0 +1,118 @@
+From 06854db1452342ede45be663950d3bfe3951abe3 Mon Sep 17 00:00:00 2001
+From: Georg Lippitsch <georg.lippitsch@gmx.at>
+Date: Thu, 12 Sep 2013 19:34:49 +0200
+Subject: [PATCH 1/2] Add DVD Fidelity Analyzer Encoder file and build system
+ entries
+
+---
+ libavformat/Makefile         |  1 +
+ libavformat/allformats.c     |  1 +
+ libavformat/dvafidelityenc.c | 72 ++++++++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 74 insertions(+)
+ create mode 100644 libavformat/dvafidelityenc.c
+
+diff --git a/libavformat/Makefile b/libavformat/Makefile
+index ceffa78..097ad30 100644
+--- a/libavformat/Makefile
++++ b/libavformat/Makefile
+@@ -125,6 +125,7 @@ OBJS-$(CONFIG_DTS_DEMUXER)               += dtsdec.o rawdec.o
+ OBJS-$(CONFIG_DTS_MUXER)                 += rawenc.o
+ OBJS-$(CONFIG_DV_DEMUXER)                += dv.o
+ OBJS-$(CONFIG_DV_MUXER)                  += dvenc.o
++OBJS-$(CONFIG_DVAFIDELITY_MUXER)         += dvafidelityenc.o
+ OBJS-$(CONFIG_DXA_DEMUXER)               += dxa.o
+ OBJS-$(CONFIG_EA_CDATA_DEMUXER)          += eacdata.o
+ OBJS-$(CONFIG_EA_DEMUXER)                += electronicarts.o
+diff --git a/libavformat/allformats.c b/libavformat/allformats.c
+index 03c883b..575ae31 100644
+--- a/libavformat/allformats.c
++++ b/libavformat/allformats.c
+@@ -110,6 +110,7 @@ void av_register_all(void)
+     REGISTER_MUXDEMUX(DTS,              dts);
+     REGISTER_DEMUXER (DTSHD,            dtshd);
+     REGISTER_MUXDEMUX(DV,               dv);
++    REGISTER_MUXER   (DVAFIDELITY,      dvafidelity);
+     REGISTER_DEMUXER (DXA,              dxa);
+     REGISTER_DEMUXER (EA,               ea);
+     REGISTER_DEMUXER (EA_CDATA,         ea_cdata);
+diff --git a/libavformat/dvafidelityenc.c b/libavformat/dvafidelityenc.c
+new file mode 100644
+index 0000000..bb8a2ed
+--- /dev/null
++++ b/libavformat/dvafidelityenc.c
+@@ -0,0 +1,72 @@
++/*
++ * DVA Profession fidelity analyzer encoder
++ * Copyright (c) 2013 Georg Lippitsch
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with FFmpeg; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
++ */
++
++#include "libavutil/avassert.h"
++#include "libavutil/avstring.h"
++#include "libavutil/opt.h"
++#include "avformat.h"
++#include "internal.h"
++
++struct DVAContext {
++    const AVClass *avclass;
++
++};
++
++static int dvafidelity_write_header(struct AVFormatContext *s)
++{
++    return 0;
++}
++
++static int dvafidelity_write_packet(struct AVFormatContext *s, AVPacket *pkt)
++{
++    return 0;
++}
++
++static int dvafidelity_write_trailer(struct AVFormatContext *s)
++{
++    return 0;
++}
++
++static const AVOption dva_options[] = {
++
++    { NULL },
++};
++
++static const AVClass dvafidelity_class = {
++    .class_name = "DVA Fidelity Analyzer class",
++    .item_name  = av_default_item_name,
++    .option     = dva_options,
++    .version    = LIBAVUTIL_VERSION_INT,
++};
++
++#if CONFIG_DVAFIDELITY_MUXER
++AVOutputFormat ff_dvafidelity_muxer = {
++    .name              = "dvafidelity",
++    .long_name         = NULL_IF_CONFIG_SMALL("DVA Profession fidelity analyzer"),
++    .priv_data_size    = sizeof(struct DVAContext),
++    .audio_codec       = AV_CODEC_ID_NONE,
++    .video_codec       = AV_CODEC_ID_RAWVIDEO,
++    .write_header      = dvafidelity_write_header,
++    .write_packet      = dvafidelity_write_packet,
++    .write_trailer     = dvafidelity_write_trailer,
++    .flags             = AVFMT_TS_NONSTRICT |
++                         AVFMT_TS_NEGATIVE,
++    .priv_class        = &dvafidelity_class,
++};
++#endif /* CONFIG_DVAFIDELITY_MUXER */
+-- 
+1.8.1.4
+

@@ -1,0 +1,74 @@
+From 77caba0297806ebcc47c1372eff6cb6ebf974740 Mon Sep 17 00:00:00 2001
+From: Georg Lippitsch <georg.lippitsch@gmx.at>
+Date: Thu, 19 Sep 2013 16:23:52 +0200
+Subject: [PATCH 3/3] Log exactly which part of the image differs
+
+---
+ libavformat/dvafidelityenc.c | 32 ++++++++++++++++++++++----------
+ 1 file changed, 22 insertions(+), 10 deletions(-)
+
+diff --git a/libavformat/dvafidelityenc.c b/libavformat/dvafidelityenc.c
+index 6d47698..7052197 100644
+--- a/libavformat/dvafidelityenc.c
++++ b/libavformat/dvafidelityenc.c
+@@ -114,6 +114,9 @@ static int dvafidelity_write_packet(struct AVFormatContext *s, AVPacket *pkt)
+ 
+             // Loop for fields
+             for (j = 0; j < 2; j++) {
++                int differ_y = 0;
++                int differ_u = 0;
++                int differ_v = 0;
+ 
+                 ry = RGB_TO_Y_CCIR(c->color[e][i][j][0],
+                                    c->color[e][i][j][1],
+@@ -127,28 +130,37 @@ static int dvafidelity_write_packet(struct AVFormatContext *s, AVPacket *pkt)
+                 // Compare luma
+                 for (y = j; y < r_h; y+=2) {
+                     for (x = 0; x < r_w; x++) {
+-                        differ += ((py[r_y*w+r_x+y*w+x] - ry) *
+-                                   (py[r_y*w+r_x+y*w+x] - ry) >
+-                                   c->fuzz_luma * c->fuzz_luma);
++                        differ_y += ((py[r_y*w+r_x+y*w+x] - ry) *
++                                     (py[r_y*w+r_x+y*w+x] - ry) >
++                                     c->fuzz_luma * c->fuzz_luma);
+                     }
+                 }
+-                avio_write(s->pb, logbuf, strlen(logbuf));
+                 // Compare u
+                 for (y = j; y < c_r_h; y+=2) {
+                     for (x = 0; x < c_r_w; x++) {
+-                        differ += ((pu[c_r_y*cw+c_r_x+y*cw+x] - ru) *
+-                                   (pu[c_r_y*cw+c_r_x+y*cw+x] - ru) >
+-                                   c->fuzz_chroma * c->fuzz_chroma);
++                        differ_u += ((pu[c_r_y*cw+c_r_x+y*cw+x] - ru) *
++                                     (pu[c_r_y*cw+c_r_x+y*cw+x] - ru) >
++                                     c->fuzz_chroma * c->fuzz_chroma);
+                     }
+                 }
+                 // Compare v
+                 for (y = j; y < c_r_h; y+=2) {
+                     for (x = 0; x < c_r_w; x++) {
+-                        differ += ((pv[c_r_y*cw+c_r_x+y*cw+x] - rv) *
+-                                   (pv[c_r_y*cw+c_r_x+y*cw+x] - rv) >
+-                                   c->fuzz_chroma * c->fuzz_chroma);
++                        differ_v += ((pv[c_r_y*cw+c_r_x+y*cw+x] - rv) *
++                                     (pv[c_r_y*cw+c_r_x+y*cw+x] - rv) >
++                                     c->fuzz_chroma * c->fuzz_chroma);
+                     }
+                 }
++                differ += (differ_y + differ_u + differ_v);
++                if (differ_y || differ_u || differ_v) {
++                    snprintf(logbuf, sizeof(logbuf), "Frame %"PRId64" compared with reference %d, "
++                             "%s rectangle, %s field differs with Y=%d, U=%d, V=%d pixels\n",
++                             c->frame, e,
++                             i == 0 ? "upper" : "lower",
++                             j == 0 ? "top" : "bottom",
++                             differ_y, differ_u, differ_v);
++                    avio_write(s->pb, logbuf, strlen(logbuf));
++                }
+             }
+         }
+ 
+-- 
+1.8.1.4
+
