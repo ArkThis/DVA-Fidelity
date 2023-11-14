@@ -1,0 +1,136 @@
+Image export:
+
+//------------------------
+VirtualDub 1.9.11
+	PNG	rgb24
+
+
+//------------------------
+Mplayer p4-svn-32848
+	PNG	rgb24
+
+	mplayer testvideo_color_rectangles-YUV422P.avi -frames 4 -nosound -vo png
+
+
+//------------------------
+ffmpeg SVN-r26402	
+	BMP	bgr24
+
+	ffmpeg -vframes 4 -i 'testvideo_color_rectangles-YUV422P.avi' -pix_fmt rgb24 -f image2 '%03d.bmp'
+
+
+
+== Rectangle extraction (24.Mar.2011)
+A) Crop the video *frame* to with the border between upper and lower rectangle in its vertical center.
+
+*) Rectangle (interlaced) in frame:
+	position:	600 / 6
+	size:		96 x 386
+
+B) Since we want to extract 16x16 squares per field per rectangle, the *frame* should be cropped to:
+
+	Crop interlaced rectangle:
+		rect_width = 96
+		square_width = 16
+		tolerance = 32
+		vert_center = 6 + (386)/2 +1 = 200
+
+	position:
+	   topleft:
+		x1 = 600 + (rect_width/2) - (square_width/2) = 600+48-8 = 640
+		y1 = vert_center - tolerance - square_width = 152
+	   bottomright:
+		x2 = x2 + square_width
+		y2 = vert_center + tolerance + square_width = 248
+
+	size:
+	   16 x 96
+		
+
+
+
+== Rectangle Cropping:
+
+*) ------ both rectangles (full frame reference):
+crop limits:
+	L 600
+	R 24
+	T 8
+	B 186
+
+
+*) ------ upper rectangle (extracted field = half y-resolution)C:
+	whole rectangle:
+	pos: 601 x 5
+	size: 94 x 94
+
+	Extract the center of the upper rectangle:
+	pos: 640 x 44
+	size: 16 x 16
+
+*) ------ lower rectangle
+	whole:
+	pos: 601 x 102
+	size: 94 x 94
+
+	center:
+	pos: 640 x 140
+	size: 16 x 16
+
+
+CONCLUSION:
+Crop the video as soon as possible as close as possible to the rectangle's "hotspots" (=center):
+
+L/R border: (96 / 2) - (16 / 2) = 40
+T/B border: (194 / 2) - (32 / 2) -1 = 80
+
+L: 600 + LR_BORDER = 640
+R: 24 + LR_BORDER = 64
+T: 8 + TB_BORDER = 88
+B: 186 + TB_BORDER = 266
+
+Resulting size: 16 x 222
+
+
+
+
+// ------------------------------
+Testvideo generation:
+
+1) Grid:
+
+Gimp > Filters > Render > Pattern > Grid
+
+	h	v	intersection
+width	3	3	3
+spacing	42	42	2
+offset	3	3	6
+
+width	3	3	3
+spacing	42	42	2
+offset	3	3	15
+
+// ----
+New Grid (29.Mar.2011) - with 2px/1px line width:
+
+	h	v	intersection
+width	2	1	1
+spacing	31	31	1
+offset	3	3	7
+color	ffffff	ffffff	000000
+
+
+2) Color Rectangle position in frame:
+
+x	y
+600	6
+
+
+3) Timecode position:
+So, that tip and bottom of the 0 (zeroes) point in the direction of their field type (top/bottom):
+
+
+gravity: south
+x	y
+0	99
+
