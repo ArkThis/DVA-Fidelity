@@ -1,0 +1,409 @@
+diff -ruN ffmpeg-4.0.6/libavformat/allformats.c ffmpeg-4.0.6-dvafidelity/libavformat/allformats.c
+--- ffmpeg-4.0.6/libavformat/allformats.c	2020-07-03 17:10:59.000000000 +0200
++++ ffmpeg-4.0.6-dvafidelity/libavformat/allformats.c	2023-12-16 21:51:54.244388505 +0100
+@@ -120,6 +120,7 @@
+ extern AVInputFormat  ff_dtshd_demuxer;
+ extern AVInputFormat  ff_dv_demuxer;
+ extern AVOutputFormat ff_dv_muxer;
++extern AVOutputFormat ff_dvafidelity_muxer;
+ extern AVInputFormat  ff_dvbsub_demuxer;
+ extern AVInputFormat  ff_dvbtxt_demuxer;
+ extern AVInputFormat  ff_dxa_demuxer;
+diff -ruN ffmpeg-4.0.6/libavformat/allformats.c.rej ffmpeg-4.0.6-dvafidelity/libavformat/allformats.c.rej
+--- ffmpeg-4.0.6/libavformat/allformats.c.rej	2023-12-16 22:31:15.052798083 +0100
++++ ffmpeg-4.0.6-dvafidelity/libavformat/allformats.c.rej	1970-01-01 01:00:00.000000000 +0100
+@@ -1,10 +0,0 @@
+---- libavformat/allformats.c	2023-12-16 21:51:54.244388505 +0100
+-+++ libavformat/allformats.c	2020-07-03 17:10:59.000000000 +0200
+-@@ -120,7 +120,6 @@
+- extern AVInputFormat  ff_dtshd_demuxer;
+- extern AVInputFormat  ff_dv_demuxer;
+- extern AVOutputFormat ff_dv_muxer;
+--extern AVOutputFormat ff_dvafidelity_muxer;
+- extern AVInputFormat  ff_dvbsub_demuxer;
+- extern AVInputFormat  ff_dvbtxt_demuxer;
+- extern AVInputFormat  ff_dxa_demuxer;
+diff -ruN ffmpeg-4.0.6/libavformat/dvafidelityenc.c ffmpeg-4.0.6-dvafidelity/libavformat/dvafidelityenc.c
+--- ffmpeg-4.0.6/libavformat/dvafidelityenc.c	1970-01-01 01:00:00.000000000 +0100
++++ ffmpeg-4.0.6-dvafidelity/libavformat/dvafidelityenc.c	2023-12-16 21:56:40.952445069 +0100
+@@ -0,0 +1,346 @@
++/*
++ * DVA Profession fidelity analyzer encoder
++ * Copyright (c) 2013 Georg Lippitsch
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with FFmpeg; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
++ */
++
++#include "libavutil/avassert.h"
++#include "libavutil/avstring.h"
++#include "libavutil/colorspace.h"
++#include "libavutil/opt.h"
++#include "libavutil/pixdesc.h"
++#include "avformat.h"
++#include "internal.h"
++#include "time.h"
++
++struct DVAContext {
++    const AVClass *avclass;
++
++    int64_t frame;                  // Current frame index
++    int64_t frames_bad;             // Frames that failed check
++    int expected;                   // Reference pattern to expect next
++
++    // AVOptions
++    int rect_pos[2][2];             // Position of color timing-rectangles
++    int rect_size[2][2];            // Size of color timing-rectangles to cutout for evaluation
++    uint8_t color[4][2][2][4];      // Reference colors for timing-rectangles
++    int fuzz_luma;                  // Tolerance of LUMA value comparison
++    int fuzz_chroma;                //     - " -    CHROMA
++};
++
++
++static void get_timestamp(char *timestamp)
++{
++    time_t rawtime;
++    struct tm * timeinfo;
++
++    // Date/time of execution:
++    time(&rawtime);
++    timeinfo = localtime(&rawtime);
++    strftime(timestamp, 80, "%Y-%m-%dT%T", timeinfo);
++}
++
++                    
++
++static int dvafidelity_write_header(struct AVFormatContext *s)
++{
++    struct DVAContext *c = s->priv_data;
++    char logbuf[512];
++    char timestamp[80];
++
++    // Initialize some variables:
++    c->expected = -1;
++    c->frames_bad = 0;
++    get_timestamp(timestamp);
++    
++    // Write log header:
++    snprintf(logbuf, sizeof(logbuf), 
++             "\"------------------------------\n"
++             " DVA-Fidelity Analyzer output\n"
++             "------------------------------\n"
++             "Started at: %s\n"
++             "SETTINGS:\n"
++             "  Rectangles:\n"
++             "    crop_upper_pos = %d/%d\n"
++             "    crop_upper_size = %dx%d\n"
++             "    crop_lower_pos = %d/%d\n"
++             "    crop_lower_size = %dx%d\n"
++             "\n"
++             "  Tolerance:\n"
++             "    fuzz_luma = %d\n"
++             "    fuzz_chroma = %d\n"
++             "\n"
++             "  Duration: %.6fs\n"
++             "\";;;;;;;\n\n",
++
++             timestamp,
++             c->rect_pos[0][0], c->rect_pos[0][1], c->rect_size[0][0], c->rect_size[0][1],
++             c->rect_pos[1][0], c->rect_pos[1][1], c->rect_size[1][0], c->rect_size[1][1],
++             c->fuzz_luma,
++             c->fuzz_chroma,
++             (float)(s->duration / 1000000)
++             );
++    avio_write(s->pb, logbuf, strlen(logbuf));
++
++    
++    // CSV compatible formatting - Column labels:
++    snprintf(logbuf, sizeof(logbuf), "\"Frame\";\"Field\";\"Rectangle\";\"YUV-diff\";\"Expected Ref#\";\"Found Ref#\";\"Synchronisation\";\"Comment\"\n");
++    avio_write(s->pb, logbuf, strlen(logbuf));
++
++    return 0;
++}
++
++static int dvafidelity_write_packet(struct AVFormatContext *s, AVPacket *pkt)
++{
++    struct DVAContext *c = s->priv_data;
++    struct AVCodecContext* codec = s->streams[0]->codec;
++    const AVPixFmtDescriptor *desc = av_pix_fmt_desc_get(codec->pix_fmt);
++
++    int w = codec->width;
++    int h = codec->height;
++    int cw = -((-w) >> desc->log2_chroma_w);
++    int ch = -((-h) >> desc->log2_chroma_h);
++
++    uint8_t *py = pkt->buf->data;
++    uint8_t *pu = pkt->buf->data+w*h;
++    uint8_t *pv = pkt->buf->data+w*h+cw*ch;
++
++    int ry, ru, rv;
++
++    int e, frame, i, j, x, y;
++
++    int differ = 0;
++
++    char logbuf[256];
++
++    if (codec->codec_id != AV_CODEC_ID_RAWVIDEO) {
++        av_log(s, AV_LOG_ERROR, "Only rawvideo is supported\n");
++        return AVERROR_INVALIDDATA;
++    }
++    if (codec->pix_fmt != AV_PIX_FMT_YUV420P &&
++        codec->pix_fmt != AV_PIX_FMT_YUV422P &&
++        codec->pix_fmt != AV_PIX_FMT_YUV444P) {
++        av_log(s, AV_LOG_ERROR, "Pixel format not supported\n");
++        return AVERROR_INVALIDDATA;
++    }
++    for (i = 0; i < 2; i++) {
++        if (c->rect_pos[i][0]+c->rect_pos[i][1]*w+
++            c->rect_size[i][0]*c->rect_size[i][1] > w*h) {
++            av_log(s, AV_LOG_ERROR, "Crop rectangle %d outside frame\n", i);
++            return AVERROR_INVALIDDATA;
++        }
++    }
++    if (pkt->buf->size < w*h+2*cw*ch)
++    {
++        av_log(s, AV_LOG_ERROR, "Packet buffer too small\n");
++        return AVERROR_INVALIDDATA;
++    }
++
++    e = c->expected == -1 ? 0 : c->expected;
++
++    // Loop for frame
++    for (frame = 0; frame < 4; frame++) {
++        differ = 0;
++
++        // Loop for upper/lower rectangle
++        for (i = 0; i < 2; i++) {
++            int r_x, r_y, r_w, r_h;
++            int c_r_x, c_r_y, c_r_w, c_r_h;
++            r_x = c->rect_pos[i][0];
++            r_y = c->rect_pos[i][1];
++            r_w = c->rect_size[i][0];
++            r_h = c->rect_size[i][1];
++            c_r_x = -((-r_x) >> desc->log2_chroma_w);
++            c_r_y = -((-r_y) >> desc->log2_chroma_h);
++            c_r_w = -((-r_w) >> desc->log2_chroma_w);
++            c_r_h = -((-r_h) >> desc->log2_chroma_h);
++
++            // Loop for fields
++            for (j = 0; j < 2; j++) {
++                int differ_y = 0;
++                int differ_u = 0;
++                int differ_v = 0;
++
++                // Convert reference colors of "expected" frame (given in RGB) to
++                // YUV (limited to CCIR value range):
++                ry = RGB_TO_Y_CCIR(c->color[e][i][j][0],
++                                   c->color[e][i][j][1],
++                                   c->color[e][i][j][2]);
++                ru = RGB_TO_U_CCIR(c->color[e][i][j][0],
++                                   c->color[e][i][j][1],
++                                   c->color[e][i][j][2], 0);
++                rv = RGB_TO_V_CCIR(c->color[e][i][j][0],
++                                   c->color[e][i][j][1],
++                                   c->color[e][i][j][2], 0);
++                // Compare luma
++                for (y = j; y < r_h; y+=2) {
++                    for (x = 0; x < r_w; x++) {
++                        differ_y += ((py[r_y*w+r_x+y*w+x] - ry) *
++                                     (py[r_y*w+r_x+y*w+x] - ry) >
++                                     c->fuzz_luma * c->fuzz_luma);
++                    }
++                }
++                // Compare u
++                for (y = j; y < c_r_h; y+=2) {
++                    for (x = 0; x < c_r_w; x++) {
++                        differ_u += ((pu[c_r_y*cw+c_r_x+y*cw+x] - ru) *
++                                     (pu[c_r_y*cw+c_r_x+y*cw+x] - ru) >
++                                     c->fuzz_chroma * c->fuzz_chroma);
++                    }
++                }
++                // Compare v
++                for (y = j; y < c_r_h; y+=2) {
++                    for (x = 0; x < c_r_w; x++) {
++                        differ_v += ((pv[c_r_y*cw+c_r_x+y*cw+x] - rv) *
++                                     (pv[c_r_y*cw+c_r_x+y*cw+x] - rv) >
++                                     c->fuzz_chroma * c->fuzz_chroma);
++                    }
++                }
++                differ += (differ_y + differ_u + differ_v);
++
++                // Log mismatch - but only if a certain reference frame was already
++                // expected:
++                if ((c->expected != -1) && (e == c->expected)) {
++                    if (differ_y || differ_u || differ_v) {
++                        // CSV compatible formatting. Columns are:
++                        // Frame#; Field; Rectangle; YUV-diff; Expected Ref#; Found Ref#; Synchronization;
++                        snprintf(logbuf, sizeof(logbuf), 
++                                 "%06"PRId64";\"%s\";\"%s\";\"%03d/%03d/%03d\";%d;;;\n",
++                                 c->frame, 
++                                 j == 0 ? "Top" : "Bottom",
++                                 i == 0 ? "Upper" : "Lower",
++                                 differ_y, differ_u, differ_v,
++                                 e + 1
++                                );
++                        avio_write(s->pb, logbuf, strlen(logbuf));
++                    }
++                }
++            }
++        }
++
++        if (!differ)
++            break;
++
++        if (++e >= 4) e = 0;
++    }
++
++    if (differ) {
++        e = -1;
++        c->frames_bad++;
++    }
++
++    // Log only "expected-state" changes:
++    if ((c->expected != e) || (c->expected == -1)) {
++        if ((c->expected == -1) && (e >= 0)) {
++            // CSV compatible formatting. Columns are:
++            // Frame#; Field; Rectangle; YUV-diff; Expected Ref#; Found Ref#; Synchronization;
++            snprintf(logbuf, sizeof(logbuf), 
++                     "%06"PRId64";;;;%d;;\"%s\";\n",
++                     c->frame, 
++                     c->expected, 
++                     //e + 1,
++                     //(c->expected == e || c->expected == -1) && e >= 0 ? "Ok" : "FAILED");
++                     (c->expected == -1) && e >= 0 ? "SYNC" : "FAILED");
++            avio_write(s->pb, logbuf, strlen(logbuf));
++        }
++    }
++    c->frame++;
++
++    // Choose which reference frame to expect next:
++    c->expected = differ ? -1 : (e + 1) % 4;
++
++    return 0;
++}
++
++static int dvafidelity_write_trailer(struct AVFormatContext *s)
++{
++    struct DVAContext *c = s->priv_data;
++    char logbuf[256];
++    char timestamp[80];
++
++    // Log timestamp when the analysis was finished:
++    get_timestamp(timestamp);
++
++    snprintf(logbuf, sizeof(logbuf), 
++             "\n\"------------------------------\n"
++             "Finished at: %s\n"
++             "Checked %"PRId64" frames.\n"
++             "Found %"PRId64" invalid frames.\n"
++             "\";;;;;;;\n\n",
++             timestamp,
++             c->frame,
++             c->frames_bad
++             );
++    avio_write(s->pb, logbuf, strlen(logbuf));
++
++    return 0;
++}
++
++#define OFFSET(x) offsetof(struct DVAContext, x)
++#define ENC AV_OPT_FLAG_ENCODING_PARAM
++static const AVOption dva_options[] = {
++    // NOTE: The default settings are optimized for detecting field/frame timing issues, with
++    //       as little "false positives" caused by other image artefacts as possible.
++    //       For a more thorough analysis of the image quality, increase the crop rectangle size to
++    //       32x64.
++    //       The crop position must be updated if the crop rectangle exceeds a certain size.
++    { "crop_upper_pos", "Position of upper crop rectangle", OFFSET(rect_pos[0]), AV_OPT_TYPE_IMAGE_SIZE, {.str = "593x95"}, 0, 0, ENC },
++    { "crop_upper_size", "Size of upper crop rectangle", OFFSET(rect_size[0]), AV_OPT_TYPE_IMAGE_SIZE, {.str = "16x32"}, 0, 0, ENC },
++    { "crop_lower_pos", "Position of lower crop rectangle", OFFSET(rect_pos[1]), AV_OPT_TYPE_IMAGE_SIZE, {.str = "593x280"}, 0, 0, ENC },
++    { "crop_lower_size", "Size of lower crop rectangle", OFFSET(rect_size[1]), AV_OPT_TYPE_IMAGE_SIZE, {.str = "16x32"}, 0, 0, ENC },
++    { "color_f1_up_top", "Color of frame 1, upper rectangle, top field", OFFSET(color[0][0][0]), AV_OPT_TYPE_COLOR, {.str = "0xFF0000"}, 0, 0, ENC },
++    { "color_f1_up_bot", "Color of frame 1, upper rectangle, bottom field", OFFSET(color[0][0][1]), AV_OPT_TYPE_COLOR, {.str = "0xFF0000"}, 0, 0, ENC },
++    { "color_f1_low_top", "Color of frame 1, lower rectangle, top field", OFFSET(color[0][1][0]), AV_OPT_TYPE_COLOR, {.str = "0x00FF00"}, 0, 0, ENC },
++    { "color_f1_low_bot", "Color of frame 1, lower rectangle, bottom field", OFFSET(color[0][1][1]), AV_OPT_TYPE_COLOR, {.str = "0x0000FF"}, 0, 0, ENC },
++    { "color_f2_up_top", "Color of frame 2, upper rectangle, top field", OFFSET(color[1][0][0]), AV_OPT_TYPE_COLOR, {.str = "0x00FF00"}, 0, 0, ENC },
++    { "color_f2_up_bot", "Color of frame 2, upper rectangle, bottom field", OFFSET(color[1][0][1]), AV_OPT_TYPE_COLOR, {.str = "0x00FF00"}, 0, 0, ENC },
++    { "color_f2_low_top", "Color of frame 2, lower rectangle, top field", OFFSET(color[1][1][0]), AV_OPT_TYPE_COLOR, {.str = "0xFF0000"}, 0, 0, ENC },
++    { "color_f2_low_bot", "Color of frame 2, lower rectangle, bottom field", OFFSET(color[1][1][1]), AV_OPT_TYPE_COLOR, {.str = "0x0000FF"}, 0, 0, ENC },
++    { "color_f3_up_top", "Color of frame 3, upper rectangle, top field", OFFSET(color[2][0][0]), AV_OPT_TYPE_COLOR, {.str = "0xFF0000"}, 0, 0, ENC },
++    { "color_f3_up_bot", "Color of frame 3, upper rectangle, bottom field", OFFSET(color[2][0][1]), AV_OPT_TYPE_COLOR, {.str = "0xFF0000"}, 0, 0, ENC },
++    { "color_f3_low_top", "Color of frame 3, lower rectangle, top field", OFFSET(color[2][1][0]), AV_OPT_TYPE_COLOR, {.str = "0x00FF00"}, 0, 0, ENC },
++    { "color_f3_low_bot", "Color of frame 3, lower rectangle, bottom field", OFFSET(color[2][1][1]), AV_OPT_TYPE_COLOR, {.str = "0xFFFFFF"}, 0, 0, ENC },
++    { "color_f4_up_top", "Color of frame 4, upper rectangle, top field", OFFSET(color[3][0][0]), AV_OPT_TYPE_COLOR, {.str = "0x00FF00"}, 0, 0, ENC },
++    { "color_f4_up_bot", "Color of frame 4, upper rectangle, bottom field", OFFSET(color[3][0][1]), AV_OPT_TYPE_COLOR, {.str = "0x00FF00"}, 0, 0, ENC },
++    { "color_f4_low_top", "Color of frame 4, lower rectangle, top field", OFFSET(color[3][1][0]), AV_OPT_TYPE_COLOR, {.str = "0xFF0000"}, 0, 0, ENC },
++    { "color_f4_low_bot", "Color of frame 4, lower rectangle, bottom field", OFFSET(color[3][1][1]), AV_OPT_TYPE_COLOR, {.str = "0xFFFFFF"}, 0, 0, ENC },
++    { "fuzz_luma", "Fuzz for luminance", OFFSET(fuzz_luma), AV_OPT_TYPE_INT, {.i64 = 50}, 0, 100, ENC },
++    { "fuzz_chroma", "Fuzz for chrominance", OFFSET(fuzz_chroma), AV_OPT_TYPE_INT, {.i64 = 50}, 0, 100, ENC },
++    { NULL },
++};
++
++static const AVClass dvafidelity_class = {
++    .class_name = "DVA Fidelity Analyzer class",
++    .item_name  = av_default_item_name,
++    .option     = dva_options,
++    .version    = LIBAVUTIL_VERSION_INT,
++};
++
++#if CONFIG_DVAFIDELITY_MUXER
++AVOutputFormat ff_dvafidelity_muxer = {
++    .name              = "dvafidelity",
++    .long_name         = NULL_IF_CONFIG_SMALL("DVA-Profession Fidelity Analyzer"),
++    .priv_data_size    = sizeof(struct DVAContext),
++    .audio_codec       = AV_CODEC_ID_NONE,
++    .video_codec       = AV_CODEC_ID_RAWVIDEO,
++    .write_header      = dvafidelity_write_header,
++    .write_packet      = dvafidelity_write_packet,
++    .write_trailer     = dvafidelity_write_trailer,
++    .flags             = AVFMT_TS_NONSTRICT |
++                         AVFMT_TS_NEGATIVE,
++    .priv_class        = &dvafidelity_class,
++};
++#endif /* CONFIG_DVAFIDELITY_MUXER */
+diff -ruN ffmpeg-4.0.6/libavformat/dvafidelityenc.d ffmpeg-4.0.6-dvafidelity/libavformat/dvafidelityenc.d
+--- ffmpeg-4.0.6/libavformat/dvafidelityenc.d	1970-01-01 01:00:00.000000000 +0100
++++ ffmpeg-4.0.6-dvafidelity/libavformat/dvafidelityenc.d	2023-12-16 21:57:34.492455272 +0100
+@@ -0,0 +1,19 @@
++libavformat/dvafidelityenc.o: libavformat/dvafidelityenc.c \
++ libavutil/avassert.h libavutil/avutil.h libavutil/common.h \
++ libavutil/attributes.h libavutil/macros.h libavutil/version.h \
++ libavutil/avconfig.h config.h libavutil/intmath.h \
++ libavutil/x86/intmath.h libavutil/mem.h libavutil/error.h \
++ libavutil/internal.h libavutil/timer.h libavutil/log.h \
++ libavutil/x86/timer.h libavutil/cpu.h libavutil/dict.h \
++ libavutil/pixfmt.h libavutil/x86/emms.h libavutil/attributes.h \
++ libavutil/cpu.h libavutil/libm.h libavutil/intfloat.h \
++ libavutil/mathematics.h libavutil/rational.h libavutil/avstring.h \
++ libavutil/colorspace.h libavutil/opt.h libavutil/samplefmt.h \
++ libavutil/pixdesc.h libavformat/avformat.h libavcodec/avcodec.h \
++ libavutil/samplefmt.h libavutil/avutil.h libavutil/buffer.h \
++ libavutil/channel_layout.h libavutil/dict.h libavutil/frame.h \
++ libavutil/buffer.h libavutil/hwcontext.h libavutil/frame.h \
++ libavutil/log.h libavutil/pixfmt.h libavutil/rational.h \
++ libavcodec/version.h libavutil/version.h libavformat/avio.h \
++ libavutil/common.h libavformat/version.h libavformat/internal.h \
++ libavutil/bprint.h libavutil/avstring.h libavformat/os_support.h
+diff -ruN ffmpeg-4.0.6/libavformat/Makefile ffmpeg-4.0.6-dvafidelity/libavformat/Makefile
+--- ffmpeg-4.0.6/libavformat/Makefile	2020-07-03 17:10:59.000000000 +0200
++++ ffmpeg-4.0.6-dvafidelity/libavformat/Makefile	2023-12-16 21:53:16.712405116 +0100
+@@ -159,6 +159,7 @@
+ OBJS-$(CONFIG_DTS_MUXER)                 += rawenc.o
+ OBJS-$(CONFIG_DV_DEMUXER)                += dv.o
+ OBJS-$(CONFIG_DV_MUXER)                  += dvenc.o
++OBJS-$(CONFIG_DVAFIDELITY_MUXER)         += dvafidelityenc.o
+ OBJS-$(CONFIG_DVBSUB_DEMUXER)            += dvbsub.o
+ OBJS-$(CONFIG_DVBTXT_DEMUXER)            += dvbtxt.o
+ OBJS-$(CONFIG_DXA_DEMUXER)               += dxa.o
