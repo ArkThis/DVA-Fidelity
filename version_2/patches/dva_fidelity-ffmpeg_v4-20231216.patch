@@ -9,20 +9,6 @@ diff -ruN ffmpeg-4.0.6/libavformat/allformats.c ffmpeg-4.0.6-dvafidelity/libavfo
  extern AVInputFormat  ff_dvbsub_demuxer;
  extern AVInputFormat  ff_dvbtxt_demuxer;
  extern AVInputFormat  ff_dxa_demuxer;
-diff -ruN ffmpeg-4.0.6/libavformat/allformats.c.rej ffmpeg-4.0.6-dvafidelity/libavformat/allformats.c.rej
---- ffmpeg-4.0.6/libavformat/allformats.c.rej	2023-12-16 22:31:15.052798083 +0100
-+++ ffmpeg-4.0.6-dvafidelity/libavformat/allformats.c.rej	1970-01-01 01:00:00.000000000 +0100
-@@ -1,10 +0,0 @@
----- libavformat/allformats.c	2023-12-16 21:51:54.244388505 +0100
--+++ libavformat/allformats.c	2020-07-03 17:10:59.000000000 +0200
--@@ -120,7 +120,6 @@
-- extern AVInputFormat  ff_dtshd_demuxer;
-- extern AVInputFormat  ff_dv_demuxer;
-- extern AVOutputFormat ff_dv_muxer;
---extern AVOutputFormat ff_dvafidelity_muxer;
-- extern AVInputFormat  ff_dvbsub_demuxer;
-- extern AVInputFormat  ff_dvbtxt_demuxer;
-- extern AVInputFormat  ff_dxa_demuxer;
 diff -ruN ffmpeg-4.0.6/libavformat/dvafidelityenc.c ffmpeg-4.0.6-dvafidelity/libavformat/dvafidelityenc.c
 --- ffmpeg-4.0.6/libavformat/dvafidelityenc.c	1970-01-01 01:00:00.000000000 +0100
 +++ ffmpeg-4.0.6-dvafidelity/libavformat/dvafidelityenc.c	2023-12-16 21:56:40.952445069 +0100
