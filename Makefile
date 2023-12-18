@@ -118,13 +118,13 @@ ffmpeg-unpack: $(FFMPEG_ZIP) $(BUILD_DIR)
 	tar --strip-components=1 --skip-old-files -xjf $(FFMPEG_ZIP) -C $(BUILD_DIR)
 
 .PHONY: ffmpeg
-ffmpeg: ffmpeg-unpack
+ffmpeg: ffmpeg-unpack ffmpeg-patch
 	$(info "Building FFmpeg...")
 	cd $(BUILD_DIR) && ./configure --prefix=$(FF_PREFIX) $(FF_COMPILE_FLAGS) && make $(PARALLEL_MAKE)
 
 
-.PHONY: patch
-patch:
+.PHONY: ffmpeg-patch
+ffmpeg-patch:
 	cd $(BUILD_DIR) && patch -i ../version_2/patches/dva_fidelity-ffmpeg_v4-20231216.patch -p 1
 
 
